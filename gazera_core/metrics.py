@@ -166,7 +166,7 @@ def aoi_metrics(
         raise ValueError("Screen size is required for AOI metrics; pass screen=(width, height).")
     aoi_list = normalise_aois(aois, (float(width), float(height)))
 
-    group_cols = [c for c in ("subject", "trial") if c in frame and frame[c].notna().any()]
+    group_cols = [c for c in ("subject", "trial", "condition") if c in frame and frame[c].notna().any()]
     rows: list[dict[str, Any]] = []
 
     for key, sub in frame.groupby(group_cols, dropna=False, sort=False) if group_cols else [((), frame)]:
@@ -259,7 +259,7 @@ def subject_metrics(
     screen: tuple[float, float] | None = None,
 ) -> pd.DataFrame:
     """One row per (subject, trial) recording with every headline metric."""
-    group_cols = [c for c in ("subject", "trial") if c in frame and frame[c].notna().any()]
+    group_cols = [c for c in ("subject", "trial", "condition") if c in frame and frame[c].notna().any()]
     width, height = screen or frame.attrs.get("screen", (np.nan, np.nan))
     rows: list[dict[str, Any]] = []
 

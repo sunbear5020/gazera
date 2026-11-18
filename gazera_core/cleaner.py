@@ -13,7 +13,7 @@ from typing import Any, Iterable, Mapping
 import numpy as np
 import pandas as pd
 
-from .loader import GazeData
+from .loader import GazeData, recording_columns
 
 __all__ = ["QualityReport", "CleaningAction", "quality_report", "clean_gaze", "sample_rate_hz"]
 
@@ -98,12 +98,12 @@ class QualityReport:
 
 
 def _recording_masks(frame: pd.DataFrame) -> list[tuple[str, pd.Series]]:
-    if "subject" not in frame and "trial" not in frame:
+    cols = recording_columns(frame)
+    if not cols:
         return [("all", pd.Series(True, index=frame.index))]
     key = pd.Series("", index=frame.index)
-    for col in ("subject", "trial"):
-        if col in frame:
-            key = key + frame[col].fillna("-").astype(str) + "|"
+    for col in cols:
+        key = key + frame[col].fillna("-").astype(str) + "|"
     masks = []
     for value in key.drop_duplicates():
         masks.append((str(value).strip("|"), key == value))
@@ -201,7 +201,7 @@ def quality_report(
             sum(
                 (sub["time_ms"].max() - sub["time_ms"].min()) / 1000.0
                 for _, sub in frame.groupby(
-                    [c for c in ("subject", "trial") if c in frame] or None, dropna=False
+                    recording_columns(frame) or None, dropna=False
                 )
                 if len(sub)
             )
@@ -247,7 +247,7 @@ def clean_gaze(
     """Return a cleaned copy of a canonical frame plus the actions taken."""
     out = frame.copy()
     actions: list[CleaningAction] = []
-    group_cols = [c for c in ("subject", "trial") if c in out]
+    group_cols = recording_columns(out)
 
     if sort_timestamps and "time_ms" in out:
         before = out["time_ms"].copy()

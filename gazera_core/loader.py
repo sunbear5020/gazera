@@ -23,6 +23,7 @@ import pandas as pd
 
 __all__ = [
     "CANONICAL_FIELDS",
+    "recording_columns",
     "GazeData",
     "detect_mapping",
     "find_aoi_columns",
@@ -74,6 +75,9 @@ _PATTERNS: tuple[tuple[str, tuple[str, ...]], ...] = (
             r"^device timestamp.*$",
             r"^time stamp$",
             r"^time$",
+            r"^time[ _]?(ms|us|µs|s)$",
+            r"^timestamp[ _]?(ms|us|µs|s)$",
+            r"^time \((ms|us|µs|s)\)$",
             r"^(recording )?timestamp.*$",
         ),
     ),
@@ -239,6 +243,16 @@ _TIME_BLOCKLIST = (
     "time of day",
     "elapsed",
 )
+
+
+def recording_columns(frame: pd.DataFrame) -> list[str]:
+    """Columns that identify one recording.
+
+    ``condition`` is part of the identity: exports often carry one row block per
+    stimulus with no trial column, and grouping by subject alone would merge two
+    conditions into one timeline.
+    """
+    return [c for c in ("subject", "trial", "condition") if c in frame and frame[c].notna().any()]
 
 
 def normalise_columns(columns: Iterable[Any]) -> list[str]:
@@ -518,14 +532,16 @@ class GazeData:
         return sorted({str(s) for s in self.frame["condition"].dropna().unique()})
 
     def groups(self) -> list[tuple[str | None, str | None]]:
-        """Recording groups: one per (subject, trial)."""
+        """Recording groups: one per (subject, trial, condition)."""
         frame = self.frame
-        if "subject" not in frame and "trial" not in frame:
+        cols = recording_columns(frame)
+        if not cols:
             return [(None, None)]
-        subj = frame["subject"] if "subject" in frame else pd.Series(None, index=frame.index)
-        trial = frame["trial"] if "trial" in frame else pd.Series(None, index=frame.index)
-        keys = pd.DataFrame({"subject": subj, "trial": trial}).drop_duplicates()
-        return [(row.subject, row.trial) for row in keys.itertuples(index=False)]
+        keys = frame[cols].drop_duplicates()
+        out = []
+        for _, row in keys.iterrows():
+            out.append((row.get("subject"), row.get("trial")))
+        return out
 
     def summary(self) -> dict[str, Any]:
         return {
@@ -581,7 +597,7 @@ def build_frame(
         work["time_ms"] = np.arange(len(work), dtype=float) * (1000.0 / 60.0)
         meta["timestamp_unit"] = "synthetic-60hz"
     # rebase per recording so every recording starts at 0 ms
-    group_cols = [c for c in ("subject", "trial") if c in work and work[c].notna().any()]
+    group_cols = recording_columns(work)
     if group_cols:
         work["time_ms"] = work["time_ms"] - work.groupby(group_cols, dropna=False)["time_ms"].transform("min")
     else:

@@ -265,7 +265,7 @@ def classify_ivt(
         config.viewing_distance_mm,
     )
 
-    group_cols = [c for c in ("subject", "trial") if c in frame and frame[c].notna().any()]
+    group_cols = [c for c in ("subject", "trial", "condition") if c in frame and frame[c].notna().any()]
     groups: Iterable[tuple[Any, pd.DataFrame]]
     if group_cols:
         groups = frame.groupby(group_cols, dropna=False, sort=False)
@@ -279,9 +279,6 @@ def classify_ivt(
         if not isinstance(key, tuple):
             key = (key,)
         meta = {col: (None if pd.isna(val) else val) for col, val in zip(group_cols, key)}
-        sub = sub.sort_values("time_ms").reset_index(drop=True)
-        if "condition" in sub and sub["condition"].notna().any():
-            meta["condition"] = sub["condition"].dropna().iloc[0]
         valid = sub["valid"].fillna(False).astype(bool).to_numpy() if "valid" in sub else np.ones(len(sub), bool)
         times = sub["time_ms"].to_numpy(dtype=float)
         xs = sub["gaze_x"].to_numpy(dtype=float)
@@ -319,21 +316,23 @@ def classify_ivt(
                 )
 
         sub_out = sub.copy()
-        sub_out["ivt_label"] = np.where(labels_all == 1, "fixation", np.where(labels_all == 0, "saccade", "unclassified"))
-        sub_out["velocity_deg_s"] = np.nan
+        sub_out["ivt_label"] = np.where(
+            labels_all == 1, "fixation", np.where(labels_all == 0, "saccade", "unclassified")
+        ).astype(str)
+        velocity = np.full(len(sub_out), np.nan)
         for i in range(1, len(sub_out)):
             if labels_all[i] >= 0 and labels_all[i - 1] >= 0:
                 dt_s = (times[i] - times[i - 1]) / 1000.0
                 if dt_s > 0:
-                    sub_out.loc[i, "velocity_deg_s"] = (
-                        math.hypot(xs[i] - xs[i - 1], ys[i] - ys[i - 1]) / px_per_deg / dt_s
-                    )
+                    velocity[i] = math.hypot(xs[i] - xs[i - 1], ys[i] - ys[i - 1]) / px_per_deg / dt_s
+        sub_out["velocity_deg_s"] = velocity
+        sub_out["valid"] = sub_out["valid"].astype(bool)
         sample_frames.append(sub_out)
 
     segments = pd.DataFrame(segment_rows)
     if not segments.empty:
         segments["duration_s"] = segments["duration_ms"] / 1000.0
-        seg_groups = [c for c in ("subject", "trial") if c in segments]
+        seg_groups = [c for c in ("subject", "trial", "condition") if c in segments]
         segments["index"] = segments.groupby(seg_groups).cumcount() if seg_groups else np.arange(len(segments))
     samples = pd.concat(sample_frames, ignore_index=True) if sample_frames else frame.copy()
 
@@ -354,7 +353,7 @@ def assign_events(segments: pd.DataFrame, samples: pd.DataFrame) -> pd.DataFrame
     out["segment_id"] = -1
     if segments.empty:
         return out
-    group_cols = [c for c in ("subject", "trial") if c in segments and c in out]
+    group_cols = [c for c in ("subject", "trial", "condition") if c in segments and c in out]
     segs = segments.reset_index(drop=True)
     if group_cols:
         for key, group in segs.groupby(group_cols, dropna=False):

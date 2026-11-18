@@ -108,3 +108,30 @@ def test_validity_convention_detection(demo_data):
     # invalid samples carry Validity 4
     invalid = demo_data.frame.loc[~demo_data.frame["valid"], "validity_left"]
     assert set(invalid.dropna().unique()) <= {4.0}
+
+
+def test_recordings_are_split_by_condition_without_a_trial_column(demo_text):
+    """A block-per-stimulus export has no trial column; condition must split it."""
+    data = gz.load_gaze_bytes(
+        demo_text.encode("utf-8"),
+        mapping={
+            "gaze_x": "Gaze point X",
+            "gaze_y": "Gaze point Y",
+            "timestamp": "Recording timestamp",
+            "subject": "Participant name",
+            "condition": "Presented stimulus name",
+        },
+    )
+    n_subjects = data.frame["subject"].nunique()
+    n_conditions = data.frame["condition"].nunique()
+    assert data.frame.groupby(["subject", "condition"]).ngroups == n_subjects * n_conditions
+    spans = data.frame.groupby(["subject", "condition"])["time_ms"].max()
+    assert (spans < 9000).all()
+
+
+def test_no_condition_or_trial_makes_one_recording(demo_text):
+    data = gz.load_gaze_bytes(
+        demo_text.encode("utf-8"),
+        mapping={"gaze_x": "Gaze point X", "gaze_y": "Gaze point Y"},
+    )
+    assert len(data.groups()) == 1
