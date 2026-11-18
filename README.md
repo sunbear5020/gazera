@@ -7,6 +7,7 @@ Clean-room, vendor-neutral, **MIT-licensed** research software by
 **FEI · HEL Lab, Gyeongsang National University**.
 
 - Web workbench (browser only, no install): <https://sunbear5020.github.io/gazera/>
+- Workbench source in this repository: [`web/`](web/) — the same files the live site serves
 - Python engine: this repository / this folder (`deploy/gazera/`)
 - Version: **0.1.0 (GAZERA Core)**
 
@@ -67,6 +68,25 @@ uvicorn api.server:app --reload --port 8000
 웹 워크벤치는 설치 없이 <https://sunbear5020.github.io/gazera/> 에서 바로
 쓸 수 있으며, 파일은 브라우저 안에서만 처리됩니다(외부 전송 없음).
 
+### 웹 워크벤치 (이 저장소의 `web/`)
+
+- **라이브**: <https://sunbear5020.github.io/gazera/>
+- **이 저장소 안의 원본**: `web/index.html` · `web/styles.css` · `web/app.js`
+  (라이브 사이트와 같은 파일입니다. 파이썬 엔진과 워크벤치를 한 저장소에서 함께 받습니다.)
+
+로컬에서 띄우기 (파이썬만 있으면 됩니다):
+
+```bash
+cd web
+python3 -m http.server 8000
+# 브라우저에서 http://localhost:8000 접속
+```
+
+`file://`로 `web/index.html`을 바로 열어도 대부분 동작하지만, 브라우저 정책상
+로컬 서버로 여는 편이 안전합니다. 이 저장소의 `web/`을 GitHub Pages로 바로
+공개하려면 Settings → Pages → Source를 `Deploy from a branch`, 브랜치 `main`,
+폴더 `/web`으로 지정하면 됩니다.
+
 ### 파이프라인
 
 ```
@@ -86,6 +106,7 @@ CSV/TSV ──▶ loader ──▶ cleaner ──▶ ivt ──▶ metrics ─�
 | `gazera_core/synthetic.py` | 100 % 합성 시선 데이터 생성기 (도시숲 vs 도심 가로, 정답 라벨 포함) |
 | `gazera_core/pipeline.py` | 위 전 과정을 하나로 묶는 `analyze()` / `analyze_file()` |
 | `api/server.py` | `/api/health` · `/api/sample` · `/api/analyze` · `/api/export` |
+| `web/` | 설치 없이 쓰는 브라우저 워크벤치 (라이브 사이트와 같은 파일) |
 
 ### 컬럼 자동 매핑
 
@@ -149,12 +170,21 @@ result = analyze(data, cfg)
 ### 테스트
 
 ```bash
-python -m pytest            # 65 tests
+python -m pytest            # 67 tests
 python -m pytest -k ivt -v
 ```
 
 테스트는 모두 합성 데이터로 돌며, 알려진 정답(생성기가 만든 응시 개수)과
 비교해 I-VT 분류를 검증합니다.
+
+### CI (GitHub Actions)
+
+같은 테스트를 세 파이썬 버전(3.10·3.11·3.12)에서 돌리는 워크플로를
+`.github/ci-workflow.yml.template`로 두었습니다. 이 환경의 GitHub 연결 권한이
+`.github/workflows/` 경로 쓰기를 허용하지 않아, 템플릿으로 보관합니다.
+GitHub 웹에서 이 파일을 `.github/workflows/ci.yml`로 옮기면(내용 그대로)
+Actions가 다음 푸시부터 자동으로 돕니다. 로컬에서는 `python -m pytest`가 같은
+검사입니다.
 
 ### 3단계 로드맵
 
@@ -202,6 +232,20 @@ python -m pytest
 Or open the browser workbench: <https://sunbear5020.github.io/gazera/> — the
 file never leaves the browser.
 
+### Browser workbench (`web/`)
+
+The workbench is part of this repository, not only of the website: `web/index.html`,
+`web/styles.css`, `web/app.js` are exactly what <https://sunbear5020.github.io/gazera/>
+serves. Run it locally:
+
+```bash
+cd web
+python3 -m http.server 8000        # → http://localhost:8000
+```
+
+To publish this copy as well, set Settings → Pages → Source to branch `main`,
+folder `/web`.
+
 ### API
 
 | Method | Path | Purpose |
@@ -243,6 +287,8 @@ gazera/
 ├── README.md
 ├── pyproject.toml
 ├── requirements.txt
+├── web/
+│   └── index.html  styles.css  app.js
 ├── api/
 │   └── server.py
 ├── gazera_core/
