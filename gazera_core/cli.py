@@ -17,6 +17,7 @@ from typing import Sequence
 
 from .exporter import export_csv, export_excel, export_json
 from .pipeline import AnalysisConfig, analyze_file
+from .stimulus import parse_colors
 from .synthetic import SyntheticConfig, write_dataset
 from .ivt import IVTConfig
 from . import __version__
@@ -49,6 +50,34 @@ def _build_parser() -> argparse.ArgumentParser:
     analyze.add_argument("--subject", default=None)
     analyze.add_argument("--condition", default=None)
     analyze.add_argument("--decimal-comma", action="store_true")
+    analyze.add_argument(
+        "--stimulus",
+        type=Path,
+        default=None,
+        help="stimulus image (png/jpg) or video (mp4/webm/mov) used for the RGB exclusion filter",
+    )
+    analyze.add_argument(
+        "--exclude-rgb",
+        action="append",
+        default=None,
+        metavar="R,G,B",
+        help="colour to exclude, e.g. --exclude-rgb 0,0,0 or --exclude-rgb '#ffffff' (repeatable)",
+    )
+    analyze.add_argument("--rgb-tolerance", type=float, default=15.0, help="Euclidean RGB tolerance 0-80 (default 15)")
+    analyze.add_argument(
+        "--stimulus-offset",
+        type=float,
+        default=0.0,
+        metavar="MS",
+        help="offset added to the gaze timestamp before reading the stimulus frame",
+    )
+    analyze.add_argument(
+        "--rgb-frame-bucket",
+        type=float,
+        default=200.0,
+        metavar="MS",
+        help="video frame sampling interval in ms (default 200)",
+    )
     analyze.add_argument("--json", action="store_true", help="also print the JSON report to stdout")
     return parser
 
@@ -87,6 +116,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             ivt=IVTConfig(velocity_threshold_deg_s=args.threshold, min_fixation_ms=args.min_fixation),
             screen=tuple(args.screen) if args.screen else None,
             decimal_comma=args.decimal_comma,
+            stimulus=args.stimulus,
+            exclude_rgb=parse_colors(args.exclude_rgb) if args.exclude_rgb else None,
+            rgb_tolerance=args.rgb_tolerance,
+            stimulus_offset_ms=args.stimulus_offset,
+            rgb_frame_bucket_ms=args.rgb_frame_bucket,
         )
         result = analyze_file(
             args.file,
@@ -121,6 +155,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         for warning in summary["warnings"]:
             print(f"  ! {warning}")
+        if result.rgb_filter is not None:
+            rgb = result.rgb_filter
+            print(
+                f"RGB filter: {rgb.kind} · {rgb.excluded_samples:,} of {rgb.samples_total:,} samples "
+                f"excluded ({rgb.excluded_ratio:.1%}) · tolerance {rgb.tolerance:.0f}"
+            )
         print(f"Excel: {workbook}")
         if args.json:
             print(json.dumps(result.to_dict(), ensure_ascii=False, indent=2, default=str))

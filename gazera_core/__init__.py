@@ -42,6 +42,15 @@ from .stats import (
     holm_correction,
     normality_table,
 )
+from .stimulus import (
+    RGBFilterConfig,
+    RGBFilterReport,
+    Stimulus,
+    apply_rgb_exclusion,
+    open_stimulus,
+    parse_color,
+    parse_colors,
+)
 from .synthetic import CONDITIONS, SyntheticConfig, generate_dataset, generate_rows, write_dataset
 
 __version__ = "0.1.0"
@@ -61,11 +70,15 @@ __all__ = [
     "IVTConfig",
     "IVTResult",
     "QualityReport",
+    "RGBFilterConfig",
+    "RGBFilterReport",
+    "Stimulus",
     "SyntheticConfig",
     "analyze",
     "analyze_comparisons",
     "analyze_file",
     "aoi_metrics",
+    "apply_rgb_exclusion",
     "classify_ivt",
     "clean_gaze",
     "compare_many_groups",
@@ -89,6 +102,9 @@ __all__ = [
     "load_gaze_bytes",
     "normalise_aois",
     "normality_table",
+    "open_stimulus",
+    "parse_color",
+    "parse_colors",
     "quality_report",
     "saccade_summary",
     "sample_rate_hz",

@@ -104,6 +104,7 @@ CSV/TSV ──▶ loader ──▶ cleaner ──▶ ivt ──▶ metrics ─�
 | `gazera_core/stats.py` | 기술통계, 정규성(Shapiro-Wilk) 후 t-test/Mann-Whitney/Wilcoxon/ANOVA/Kruskal-Wallis, 효과크기, Holm 보정 |
 | `gazera_core/exporter.py` | Excel 다중 시트, CSV(UTF-8 BOM), JSON |
 | `gazera_core/synthetic.py` | 100 % 합성 시선 데이터 생성기 (도시숲 vs 도심 가로, 정답 라벨 포함) |
+| `gazera_core/stimulus.py` | 자극 이미지(정지)·동영상의 RGB 제외 필터 — 좌표별 픽셀 색을 읽어 특정 색 위의 시선을 제외 |
 | `gazera_core/pipeline.py` | 위 전 과정을 하나로 묶는 `analyze()` / `analyze_file()` |
 | `api/server.py` | `/api/health` · `/api/sample` · `/api/analyze` · `/api/export` |
 | `web/` | 설치 없이 쓰는 브라우저 워크벤치 (라이브 사이트와 같은 파일) |
@@ -160,17 +161,61 @@ cfg = AnalysisConfig(
 result = analyze(data, cfg)
 ```
 
+### 자극 RGB 제외 (정지 이미지 · 동영상)
+
+자극의 **검은 배경·흰 여백·워터마크 판**처럼 분석에서 빼고 싶은 색을 지정하면,
+그 색 위에 머문 시선 샘플을 응시·도약·AOI·조건 비교·히트맵에서 제외합니다.
+좌표 `(x, y)`의 자극 픽셀 색을 읽어 `sqrt((r-R)²+(g-G)²+(b-B)²) ≤ tolerance` 이면
+제외하고, 제외 건수와 비율을 보고서에 남깁니다. 행은 지우지 않고
+`rgb_excluded` 플래그와 `valid=False`만 세웁니다.
+
+```bash
+# 정지 이미지 자극 · 검정 배경 제외
+python -m gazera_core analyze demo.tsv --out results \
+  --stimulus poster.png --exclude-rgb 0,0,0 --rgb-tolerance 15
+
+# 동영상 자극(MP4/WebM/MOV) · 검정과 흰색 모두 제외, 100 ms 단위 프레임 샘플링
+python -m gazera_core analyze demo.tsv --out results \
+  --stimulus forest.mp4 --exclude-rgb "#000000" --exclude-rgb "#FFFFFF" \
+  --rgb-tolerance 20 --rgb-frame-bucket 100 --stimulus-offset 250
+```
+
+```python
+from gazera_core import AnalysisConfig, analyze
+
+cfg = AnalysisConfig(
+    stimulus="forest.mp4",        # .png .jpg … 또는 .mp4 .mov .webm .avi
+    exclude_rgb=[(0, 0, 0), "#FFFFFF"],
+    rgb_tolerance=15,             # 유클리드 RGB 거리 0–80
+    stimulus_offset_ms=0.0,       # 시선 시각을 자극 시간축에 맞추는 오프셋
+    rgb_frame_bucket_ms=200.0,    # 동영상 프레임 샘플링 간격
+)
+result = analyze(data, cfg)
+print(result.rgb_filter.to_dict())   # 제외 건수·비율·색상별 집계·프레임 수
+```
+
+- **동영상 디코딩**: OpenCV(`opencv-python-headless`)가 있으면 그걸 쓰고, 없으면
+  `ffmpeg`/`ffprobe` 실행 파일로 대체합니다.
+- **시선 시각 → 자극 프레임**: `frame_ms = floor((time_ms + offset) / bucket) * bucket`.
+  버킷 하나당 프레임을 한 번만 디코딩해 긴 영상에서도 멈추지 않습니다.
+- **자극이 없거나 색을 지정하지 않으면** 필터는 아무 일도 하지 않고, 보고서의
+  `rgb_filter`는 `null`입니다.
+- 웹 워크벤치에서는 같은 옵션을 UI로 제공하며, 업로드한 자극 위를 클릭해
+  **스포이드**로 색을 바로 뽑고, 동영상은 타임라인으로 프레임을 옮겨 확인합니다.
+  자극은 브라우저 밖으로 전송되지 않습니다.
+
 ### 결과물
 
 - `results/<파일명>_gazera.xlsx` — README, Summary, Quality, Quality by recording,
   Participants, Conditions, Statistics, AOI, Fixation by condition, Saccade by condition
+  (+ 자극 RGB 제외를 쓰면 `RGB filter` 시트)
 - `results/<파일명>_gazera.json` — 전체 보고서 (웹/API와 동일 스키마 `gazera.result.v1`)
 - `results/*.csv` — 시트별 CSV
 
 ### 테스트
 
 ```bash
-python -m pytest            # 67 tests
+python -m pytest            # 89 tests
 python -m pytest -k ivt -v
 ```
 
@@ -246,14 +291,40 @@ python3 -m http.server 8000        # → http://localhost:8000
 To publish this copy as well, set Settings → Pages → Source to branch `main`,
 folder `/web`.
 
+### Stimulus RGB exclusion (still image and video)
+
+Point GAZERA at the stimulus and the colours that are not research content —
+the black slide background, white margins, a watermark plate — and every gaze
+sample that landed on one of those colours is dropped from fixation/saccade
+classification, AOI metrics, condition statistics and the heatmap. A sample is
+removed when `sqrt((r-R)²+(g-G)²+(b-B)²) ≤ tolerance`. Rows are never deleted:
+they are flagged `rgb_excluded` and set to `valid = False`, and the report
+counts them.
+
+```bash
+python -m gazera_core analyze demo.tsv --out results \
+  --stimulus forest.mp4 --exclude-rgb "#000000" --exclude-rgb "#FFFFFF" \
+  --rgb-tolerance 20 --rgb-frame-bucket 100
+```
+
+Images are read with Pillow; videos with OpenCV (`opencv-python-headless`) or,
+when that is missing, an `ffmpeg` subprocess. The frame for a sample is chosen
+by `floor((time_ms + offset_ms) / bucket_ms)`, so one decoded frame serves every
+sample in the same bucket. `result.rgb_filter` reports counts, ratios,
+per-colour tallies and frames read.
+
 ### API
 
 | Method | Path | Purpose |
 | --- | --- | --- |
 | GET | `/api/health` | version, licence and non-affiliation notice |
 | GET | `/api/sample?subjects=6&duration=6` | synthetic demo dataset (TSV) |
-| POST | `/api/analyze` | multipart `file` + optional `mapping` / `config` JSON |
+| POST | `/api/analyze` | multipart `file` + optional `mapping` / `config` JSON + optional `stimulus` file |
 | POST | `/api/export?fmt=xlsx\|csv\|json` | same input, returns a file |
+
+`config` also accepts `exclude_rgb` (`[[0,0,0],"#FFFFFF"]`), `rgb_tolerance`,
+`stimulus_offset_ms`, `rgb_frame_bucket_ms` and `stimulus_path` (server-local
+file); the `stimulus` form field uploads the image or video instead.
 
 ```bash
 curl -F "file=@demo.tsv" http://127.0.0.1:8000/api/analyze | jq .summary
@@ -295,13 +366,14 @@ gazera/
 │   ├── __init__.py  __main__.py  cli.py
 │   ├── loader.py  cleaner.py  ivt.py
 │   ├── metrics.py  stats.py  exporter.py
-│   ├── synthetic.py  pipeline.py
+│   ├── synthetic.py  stimulus.py  pipeline.py
 ├── examples/
 │   └── (generated demo data lands here in the docs example)
 └── tests/
     ├── conftest.py
     ├── test_api.py  test_cleaner.py  test_ivt.py
     ├── test_loader.py  test_metrics.py  test_stats.py
+    ├── test_rgb_filter.py
     └── test_synthetic_pipeline.py
 ```
 

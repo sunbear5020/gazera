@@ -81,10 +81,15 @@ def _config_from_payload(config_payload: str | None) -> AnalysisConfig:
         screen=tuple(raw["screen"]) if raw.get("screen") else None,
         decimal_comma=bool(raw.get("decimal_comma", False)),
         include_segments=bool(raw.get("include_segments", False)),
+        stimulus=raw.get("stimulus_path") or raw.get("stimulus"),
+        exclude_rgb=raw.get("exclude_rgb"),
+        rgb_tolerance=float(raw.get("rgb_tolerance", 15.0)),
+        stimulus_offset_ms=float(raw.get("stimulus_offset_ms", 0.0)),
+        rgb_frame_bucket_ms=float(raw.get("rgb_frame_bucket_ms", 200.0)),
     )
 
 
-async def _run(file: UploadFile, mapping: str | None, config: str | None):
+async def _run(file: UploadFile, mapping: str | None, config: str | None, stimulus: UploadFile | None = None):
     payload = await file.read()
     if not payload:
         raise HTTPException(status_code=400, detail="Empty file")
@@ -97,9 +102,29 @@ async def _run(file: UploadFile, mapping: str | None, config: str | None):
     cfg = _config_from_payload(config)
     try:
         data = gz.load_gaze_bytes(payload, mapping=mapping_dict, filename=file.filename)
-        return gz.analyze(data, cfg)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    if stimulus is None or not stimulus.filename:
+        return gz.analyze(data, cfg)
+
+    # the stimulus is written to a temporary file only for this request and
+    # removed again before the response is returned
+    blob = await stimulus.read()
+    if not blob:
+        raise HTTPException(status_code=400, detail="Empty stimulus file")
+    suffix = Path(stimulus.filename).suffix.lower() or ".png"
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / f"stimulus{suffix}"
+        path.write_bytes(blob)
+        cfg.stimulus = path
+        try:
+            result = gz.analyze(data, cfg)
+        except (ValueError, FileNotFoundError, RuntimeError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        if result.rgb_filter is not None:
+            result.rgb_filter.stimulus = stimulus.filename
+        return result
 
 
 @app.get("/api/health")
@@ -109,6 +134,7 @@ def health() -> dict[str, Any]:
         "name": "GAZERA Core",
         "version": APP_VERSION,
         "license": "MIT",
+        "features": ["ivt", "aoi", "statistics", "rgb_exclusion"],
         "notices": NOTICE,
     }
 
@@ -127,9 +153,12 @@ def sample(subjects: int = Query(6, ge=1, le=40), duration: float = Query(6.0, g
 async def analyze(
     file: UploadFile = File(..., description="CSV/TSV gaze export"),
     mapping: str | None = Form(None, description="JSON object: canonical field -> column"),
-    config: str | None = Form(None, description="JSON object with ivt/aois/dvs settings"),
+    config: str | None = Form(None, description="JSON object with ivt/aois/dvs/rgb settings"),
+    stimulus: UploadFile | None = File(
+        None, description="optional stimulus image or video for the RGB exclusion filter"
+    ),
 ) -> JSONResponse:
-    result = await _run(file, mapping, config)
+    result = await _run(file, mapping, config, stimulus)
     return JSONResponse(result.to_dict())
 
 
@@ -139,8 +168,9 @@ async def export(
     fmt: str = Query("xlsx", pattern="^(xlsx|csv|json)$"),
     mapping: str | None = Form(None),
     config: str | None = Form(None),
+    stimulus: UploadFile | None = File(None, description="optional stimulus image or video"),
 ) -> Response:
-    result = await _run(file, mapping, config)
+    result = await _run(file, mapping, config, stimulus)
     stem = Path(file.filename or "gazera").stem
     if fmt == "json":
         body = json.dumps(result.to_dict(), ensure_ascii=False, indent=2, default=str)
@@ -183,5 +213,10 @@ def root() -> dict[str, Any]:
         "name": "GAZERA Core API",
         "version": APP_VERSION,
         "endpoints": ["/api/health", "/api/sample", "/api/analyze", "/api/export"],
+        "rgb_exclusion": {
+            "form_field": "stimulus",
+            "config": ["exclude_rgb", "rgb_tolerance", "stimulus_offset_ms", "rgb_frame_bucket_ms"],
+            "stimuli": ".png .jpg .jpeg .bmp .gif .webp | .mp4 .mov .avi .webm .mkv",
+        },
         "notices": NOTICE,
     }

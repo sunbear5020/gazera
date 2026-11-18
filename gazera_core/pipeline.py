@@ -27,6 +27,7 @@ from .metrics import (
     subject_metrics,
 )
 from .stats import analyze_comparisons
+from .stimulus import RGBFilterReport, apply_rgb_exclusion, parse_colors
 
 __all__ = ["AnalysisConfig", "AnalysisResult", "analyze", "analyze_file"]
 
@@ -46,6 +47,13 @@ class AnalysisConfig:
     decimal_comma: bool = False
     zero_is_invalid: bool | None = None
     include_segments: bool = False
+    #: Path to a still image or video used as the stimulus (optional).
+    stimulus: str | Path | None = None
+    #: Colours of the stimulus whose gaze should be dropped ("#000000", (0, 0, 0), ...).
+    exclude_rgb: Sequence[Any] | None = None
+    rgb_tolerance: float = 15.0
+    stimulus_offset_ms: float = 0.0
+    rgb_frame_bucket_ms: float = 200.0
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -57,6 +65,11 @@ class AnalysisConfig:
             "clean": self.clean,
             "interpolate_gap_ms": self.interpolate_gap_ms,
             "screen": list(self.screen) if self.screen else None,
+            "stimulus": str(self.stimulus) if self.stimulus else None,
+            "exclude_rgb": [list(c) for c in parse_colors(self.exclude_rgb)] if self.exclude_rgb else None,
+            "rgb_tolerance": self.rgb_tolerance,
+            "stimulus_offset_ms": self.stimulus_offset_ms,
+            "rgb_frame_bucket_ms": self.rgb_frame_bucket_ms,
         }
 
 
@@ -74,6 +87,7 @@ class AnalysisResult:
     saccade_by_condition: pd.DataFrame
     cleaning_actions: list[dict[str, Any]] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
+    rgb_filter: RGBFilterReport | None = None
 
     # -- convenience -------------------------------------------------------
     @property
@@ -96,6 +110,18 @@ class AnalysisResult:
             "quality": self.quality.to_dict(),
             "warnings": self.warnings,
             "mapping": self.data.mapping,
+            **(
+                {
+                    "rgb_filter": {
+                        "excluded_samples": self.rgb_filter.excluded_samples,
+                        "excluded_ratio": round(self.rgb_filter.excluded_ratio, 6),
+                        "exclude_rgb": self.rgb_filter.colors,
+                        "tolerance": self.rgb_filter.tolerance,
+                    }
+                }
+                if self.rgb_filter is not None
+                else {}
+            ),
         }
 
     def to_dict(self, *, include_segments: bool = False) -> dict[str, Any]:
@@ -118,6 +144,7 @@ class AnalysisResult:
             "saccade_by_condition": _records(self.saccade_by_condition),
             "comparisons": _records(self.comparisons),
             "cleaning_actions": self.cleaning_actions,
+            "rgb_filter": self.rgb_filter.to_dict() if self.rgb_filter is not None else None,
             "notices": {
                 "license": "MIT License · Copyright (c) 2026 FEI · HEL Lab, Gyeongsang National University",
                 "affiliation": (
@@ -150,7 +177,28 @@ class AnalysisResult:
             "AOI": self.aoi_table,
             "Fixation by condition": self.fixation_by_condition,
             "Saccade by condition": self.saccade_by_condition,
+            **({"RGB filter": _rgb_sheet(self.rgb_filter)} if self.rgb_filter is not None else {}),
         }
+
+
+def _rgb_sheet(report: RGBFilterReport) -> pd.DataFrame:
+    rows = [
+        {"metric": "stimulus", "value": report.stimulus},
+        {"metric": "kind", "value": report.kind},
+        {"metric": "resolution", "value": "×".join(str(v) for v in (report.resolution or ()))},
+        {"metric": "tolerance", "value": report.tolerance},
+        {"metric": "offset_ms", "value": report.offset_ms},
+        {"metric": "frame_bucket_ms", "value": report.frame_bucket_ms},
+        {"metric": "samples_total", "value": report.samples_total},
+        {"metric": "samples_sampled", "value": report.samples_sampled},
+        {"metric": "excluded_samples", "value": report.excluded_samples},
+        {"metric": "excluded_ratio", "value": round(report.excluded_ratio, 6)},
+        {"metric": "frames_read", "value": report.frames_read},
+    ]
+    for item in report.excluded_by_color:
+        r, g, b = item["rgb"]
+        rows.append({"metric": f"excluded #{r:02X}{g:02X}{b:02X}", "value": item["samples"]})
+    return pd.DataFrame(rows)
 
 
 def _round(value: Any, digits: int = 4) -> Any:
@@ -205,6 +253,20 @@ def analyze(data: GazeData, config: AnalysisConfig | None = None) -> AnalysisRes
         actions = [a.to_dict() for a in cleaning]
 
     quality = quality_report(frame, screen=(width, height) if width and height else None)
+
+    rgb_filter: RGBFilterReport | None = None
+    if config.stimulus and config.exclude_rgb:
+        frame, rgb_filter = apply_rgb_exclusion(
+            frame,
+            config.stimulus,
+            config.exclude_rgb,
+            tolerance=config.rgb_tolerance,
+            offset_ms=config.stimulus_offset_ms,
+            bucket_ms=config.rgb_frame_bucket_ms,
+            screen=(width, height) if width and height else None,
+        )
+        frame.attrs["screen"] = (width, height)
+
     ivt = classify_ivt(frame, config.ivt)
 
     aois = list(config.aois) if config.aois else default_aois(3)
@@ -217,6 +279,14 @@ def analyze(data: GazeData, config: AnalysisConfig | None = None) -> AnalysisRes
     fix_cond, sac_cond = _per_condition_segments(ivt.segments)
 
     warnings = list(quality.warnings)
+    if rgb_filter is not None:
+        warnings.extend(rgb_filter.warnings)
+        if rgb_filter.excluded_samples:
+            warnings.append(
+                f"RGB exclusion removed {rgb_filter.excluded_samples:,} of "
+                f"{rgb_filter.samples_total:,} samples ({rgb_filter.excluded_ratio:.1%}) "
+                f"that fell on the excluded stimulus colours."
+            )
     if config.ivt.px_per_deg is None and (not width or np.isnan(width)):
         warnings.append("Screen width unknown: default 1920 px / 530 mm / 650 mm assumed for the deg/s conversion.")
     if comparisons is not None and not comparisons.empty and "p" in comparisons:
@@ -224,10 +294,12 @@ def analyze(data: GazeData, config: AnalysisConfig | None = None) -> AnalysisRes
         if low is not None and not low.empty:
             warnings.append("Some comparisons rest on fewer than 6 recordings per condition; treat p-values as exploratory.")
 
+    # hand back the frame that was actually analysed (cleaned + RGB-flagged)
+    data.frame = frame
+
     return AnalysisResult(
         data=data,
-        config=config,
-        quality=quality,
+        config=config,        quality=quality,
         ivt=ivt,
         subject_table=subjects,
         aoi_table=aoi_tab,
@@ -237,6 +309,7 @@ def analyze(data: GazeData, config: AnalysisConfig | None = None) -> AnalysisRes
         saccade_by_condition=sac_cond,
         cleaning_actions=actions,
         warnings=warnings,
+        rgb_filter=rgb_filter,
     )
 
 

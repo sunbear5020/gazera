@@ -13,6 +13,13 @@ openpyxl>=3.1
 # distribution must stay MIT-only)
 pingouin>=0.5
 
+# stimulus-aware RGB exclusion (still images)
+Pillow>=10.0
+
+# optional: video stimulus decoding for the RGB exclusion filter.
+# Without it the engine falls back to an ffmpeg executable on PATH.
+opencv-python-headless>=4.9
+
 # local API
 fastapi>=0.110
 uvicorn>=0.29
